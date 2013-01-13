@@ -93,19 +93,33 @@ boot_alloc(uint32_t n)
 	// to any kernel code or global variables.
 	if (!nextfree) {
 		extern char end[];
-		nextfree = ROUNDUP((char *) end, PGSIZE);
+		nextfree = ROUNDUP((char *)end, PGSIZE);
+		cprintf("end = %08x, ROUNDUP(end, PGSIZE) = %08x\n\n",\
+		       end, ROUNDUP((char *)end, PGSIZE));
 	}
 
 	// Allocate a chunk large enough to hold 'n' bytes, then update
 	// nextfree.  Make sure nextfree is kept aligned
 	// to a multiple of PGSIZE.
 	//
-	// LAB 2: Your code here.
-
-	return NULL;
+	if (n == 0)
+	{
+		return nextfree;
+	}
+	//   A VERY STUPID MISTAKE
+	//   when I use the following code:
+	//   nextfree = ROUNDUP(nextfree, PGSIZE);
+	//   result = nextfree;
+	//   nextfree += n;
+	//   it's wrong, so what the RIGHT useage of ROUNDUP ?
+	//   why is ROUNDUP(n,PGSIZE) ?
+	result = nextfree;
+	nextfree += ROUNDUP(n, PGSIZE);	
+	return result;
 }
 
 // Set up a two-level page table:
+//
 //    kern_pgdir is its linear (virtual) address of the root
 //
 // This function only sets up the kernel part of the address space
@@ -124,11 +138,14 @@ mem_init(void)
 	i386_detect_memory();
 
 	// Remove this line when you're ready to test this function.
-	panic("mem_init: This function is not finished\n");
+	//panic("mem_init: This function is not finished\n");
 
 	//////////////////////////////////////////////////////////////////////
 	// create initial page directory.
 	kern_pgdir = (pde_t *) boot_alloc(PGSIZE);
+	
+	cprintf("kern_pgdir = %08x\n\n", kern_pgdir);
+	
 	memset(kern_pgdir, 0, PGSIZE);
 
 	//////////////////////////////////////////////////////////////////////
@@ -136,21 +153,25 @@ mem_init(void)
 	// a virtual page table at virtual address UVPT.
 	// (For now, you don't have understand the greater purpose of the
 	// following line.)
-
+	
 	// Permissions: kernel R, user R
 	kern_pgdir[PDX(UVPT)] = PADDR(kern_pgdir) | PTE_U | PTE_P;
+	cprintf("PDX(UVPT)=%d, PDX(kern_pgdir) = %d\n\n", PDX(UVPT), PDX(kern_pgdir));
+	cprintf("PDX(UTOP)=%d , PDX()*sizeof(pde_t)=%d\n\n", PDX(UTOP), PDX(UTOP)*sizeof(pde_t));
 
 	//////////////////////////////////////////////////////////////////////
 	// Allocate an array of npages 'struct PageInfo's and store it in 'pages'.
 	// The kernel uses this array to keep track of physical pages: for
 	// each physical page, there is a corresponding struct PageInfo in this
 	// array.  'npages' is the number of physical pages in memory.
-	// Your code goes here:
-
-
+	
+	pages = boot_alloc(npages * sizeof(struct PageInfo));
+	cprintf("npages PageInfo be stored in %08x, allocated by boot_alloc()\n\n", pages);
 	//////////////////////////////////////////////////////////////////////
 	// Make 'envs' point to an array of size 'NENV' of 'struct Env'.
-	// LAB 3: Your code here.
+	
+	envs = boot_alloc(NENV * sizeof(struct Env));
+	cprintf("npages envs be stored in %08x, allocated by boot_alloc()\n\n", envs);
 
 	//////////////////////////////////////////////////////////////////////
 	// Now that we've allocated the initial kernel data structures, we set
@@ -173,15 +194,21 @@ mem_init(void)
 	//    - the new image at UPAGES -- kernel R, user R
 	//      (ie. perm = PTE_U | PTE_P)
 	//    - pages itself -- kernel RW, user NONE
-	// Your code goes here:
-
+	
+	boot_map_region(kern_pgdir, UPAGES,\
+		       	ROUNDUP(npages * sizeof(struct PageInfo),PGSIZE),\
+			PADDR((void *) pages),\
+			PTE_U); //PADDR return (void *)
 	//////////////////////////////////////////////////////////////////////
 	// Map the 'envs' array read-only by the user at linear address UENVS
 	// (ie. perm = PTE_U | PTE_P).
 	// Permissions:
 	//    - the new image at UENVS  -- kernel R, user R
 	//    - envs itself -- kernel RW, user NONE
-	// LAB 3: Your code here.
+	
+	boot_map_region(kern_pgdir, UENVS, \
+			ROUNDUP(NENV * sizeof(struct Env), PGSIZE),\
+			PADDR( (void *) envs), PTE_U);
 
 	//////////////////////////////////////////////////////////////////////
 	// Use the physical memory that 'bootstack' refers to as the kernel
@@ -193,7 +220,9 @@ mem_init(void)
 	//       the kernel overflows its stack, it will fault rather than
 	//       overwrite memory.  Known as a "guard page".
 	//     Permissions: kernel RW, user NONE
-	// Your code goes here:
+	
+	boot_map_region(kern_pgdir, KSTACKTOP - KSTKSIZE,\
+			KSTKSIZE, PADDR((void *) bootstack), PTE_W);
 
 	//////////////////////////////////////////////////////////////////////
 	// Map all of physical memory at KERNBASE.
@@ -202,7 +231,9 @@ mem_init(void)
 	// We might not have 2^32 - KERNBASE bytes of physical memory, but
 	// we just set up the mapping anyway.
 	// Permissions: kernel RW, user NONE
-	// Your code goes here:
+
+	boot_map_region(kern_pgdir, KERNBASE, ~KERNBASE + 1,(physaddr_t)0, PTE_W);
+	// 2^32 - KERNBASE = (2^32 -1 - KERNBASE)+1 = ~KERNBASE +1
 
 	// Initialize the SMP-related parts of the memory map
 	mem_init_mp();
@@ -294,11 +325,28 @@ page_init(void)
 	// NB: DO NOT actually touch the physical memory corresponding to
 	// free pages!
 	size_t i;
+	
+	// PGNUM receive a linear/virtual address
+	// so, the first thing is to translate end&boot_alloc's address
+	int low_ppn = PGNUM(IOPHYSMEM);
+	int up_ppn = PGNUM(PADDR(boot_alloc(0)));
+
 	for (i = 0; i < npages; i++) {
+		pages[i].pp_link = NULL;
 		pages[i].pp_ref = 0;
-		pages[i].pp_link = page_free_list;
-		page_free_list = &pages[i];
 	}
+	
+	page_free_list = NULL;
+	for (i = 1; i < npages ; i++) {
+		if ((low_ppn <= i) && (i < up_ppn)) continue;
+		pages[i].pp_link = page_free_list; 
+		page_free_list = &pages[i];
+		//cprintf("page phyaddr =%08x has been added\n",page2pa(&pages[i]));
+
+	}
+	cprintf("Attention: low_ppn and up_ppn represent the physical page number.\
+		\nlow_ppn=%d, up_ppn=%d, page_free_list = %08x \n\n",low_ppn, up_ppn,\
+	      page_free_list );
 }
 
 //
@@ -313,8 +361,22 @@ page_init(void)
 struct PageInfo *
 page_alloc(int alloc_flags)
 {
-	// Fill this function in
-	return 0;
+	struct PageInfo * ptr = NULL;
+
+	if (!page_free_list) {
+		return ptr;
+	}
+
+	ptr = page_free_list;	
+	page_free_list = ptr->pp_link;
+	ptr->pp_link = NULL; // set ptr's node to be alone
+
+	if (alloc_flags & ALLOC_ZERO) {
+		// must use kernel virtual address in the call to memset!
+		memset((void *)page2kva(ptr), '\0', PGSIZE);		
+	}
+	
+	return ptr;
 }
 
 //
@@ -324,7 +386,8 @@ page_alloc(int alloc_flags)
 void
 page_free(struct PageInfo *pp)
 {
-	// Fill this function in
+	pp->pp_link = page_free_list;
+	page_free_list = pp;
 }
 
 //
@@ -360,10 +423,37 @@ page_decref(struct PageInfo* pp)
 // Hint 3: look at inc/mmu.h for useful macros that mainipulate page
 // table and page directory entries.
 //
+//终于懂了这个函数！！！
+//一级是页目录表，二级是页表，
+//
 pte_t *
 pgdir_walk(pde_t *pgdir, const void *va, int create)
 {
-	// Fill this function in
+	pde_t *pd = pgdir + PDX(va);
+	pte_t *pt;
+	struct PageInfo *newpage;
+
+	if ( *pd & PTE_P) { //页表存在，则返回页表项的内核虚拟地址
+		pt = (pte_t *)KADDR(PTE_ADDR(*pd));
+       		return 	(pte_t *)(pt + PTX(va));	
+	} // 二级页表不存在，则分配一Page 作为二级 *页表*,
+          // 但是没有分配真正的 *页*	
+	else if (create == true) {
+		newpage = page_alloc(0);
+		if (newpage == NULL) 
+			return NULL;	
+		memset(page2kva(newpage), 0, PGSIZE);
+		newpage->pp_ref = 1;
+		
+		// fill up the information in PTE
+		*pd = PADDR(page2kva(newpage))|PTE_U|PTE_W|PTE_P;
+
+//cprintf("*pd=PADDR(page2kva(newpage)) = %08x\n", PADDR(page2kva(newpage)));
+		pt = (pte_t *)KADDR(PTE_ADDR(*pd));
+//cprintf("KADDR(PTE_ADDR(*pd)+PTX(va) = %08x\n\n", KADDR(PTE_ADDR(*pd))+PTX(va));
+		return (pte_t *)(pt + PTX(va));// 该虚拟地址在页表中的偏移
+						//获得对应的页表项
+	}
 	return NULL;
 }
 
@@ -377,10 +467,23 @@ pgdir_walk(pde_t *pgdir, const void *va, int create)
 // mapped pages.
 //
 // Hint: the TA solution uses pgdir_walk
+//
+// what this function do is to setup the page table entry.
 static void
 boot_map_region(pde_t *pgdir, uintptr_t va, size_t size, physaddr_t pa, int perm)
 {
-	// Fill this function in
+	pte_t  *pt;
+	size_t     s;
+	
+	va = ROUNDDOWN(va, PGSIZE);
+
+	for (s = 0; s < size; s += PGSIZE) {
+		pt = pgdir_walk(pgdir, (void *)va, 1);
+		*pt = pa|perm|PTE_P;
+		
+		va += PGSIZE;
+		pa += PGSIZE;
+	}		
 }
 
 //
@@ -411,7 +514,23 @@ boot_map_region(pde_t *pgdir, uintptr_t va, size_t size, physaddr_t pa, int perm
 int
 page_insert(pde_t *pgdir, struct PageInfo *pp, void *va, int perm)
 {
-	// Fill this function in
+	pte_t *pte = pgdir_walk(pgdir, va, 1);
+	if (pte == NULL) {
+		return -E_NO_MEM;
+	}
+
+	if (*pte & PTE_P) {
+		if (PTE_ADDR(*pte) == page2pa(pp)) {
+			tlb_invalidate(pgdir, va);
+			pp->pp_ref --;
+		} else {
+			page_remove(pgdir, va);
+		}
+	}
+
+	*pte = page2pa(pp)|perm|PTE_P;
+	pp->pp_ref ++;
+
 	return 0;
 }
 
@@ -429,7 +548,15 @@ page_insert(pde_t *pgdir, struct PageInfo *pp, void *va, int perm)
 struct PageInfo *
 page_lookup(pde_t *pgdir, void *va, pte_t **pte_store)
 {
-	// Fill this function in
+	pte_t *pte = pgdir_walk(pgdir, va, 0);
+
+	if (pte_store != 0) {
+		*pte_store = pte;
+	}
+
+	if (pte != NULL && (*pte & PTE_P)) {
+		return pa2page(PTE_ADDR(*pte));
+	}
 	return NULL;
 }
 
@@ -451,7 +578,14 @@ page_lookup(pde_t *pgdir, void *va, pte_t **pte_store)
 void
 page_remove(pde_t *pgdir, void *va)
 {
-	// Fill this function in
+	pte_t *pte;
+	struct PageInfo *phypage = page_lookup(pgdir, va, &pte);
+
+	if (phypage != NULL) {
+		page_decref(phypage);
+		*pte = 0;
+		tlb_invalidate(pgdir, va);
+	}
 }
 
 //
@@ -525,6 +659,24 @@ int
 user_mem_check(struct Env *env, const void *va, size_t len, int perm)
 {
 	// LAB 3: Your code here.
+	
+	pte_t *pte;
+	uintptr_t  va_start = (uintptr_t)ROUNDDOWN(va, PGSIZE);
+	uintptr_t  va_end   = (uintptr_t)ROUNDUP(va+len, PGSIZE);
+
+	for (; va_start < va_end; va_start += PGSIZE) {
+		if (va_start >= ULIM) {
+			user_mem_check_addr = (uintptr_t)va_start;
+			return -E_FAULT;
+		}
+
+		pte = pgdir_walk(env->env_pgdir, (void *)va_start, false);
+
+		if (!pte || (*pte & (perm | PTE_U)) != (perm | PTE_U)) {
+		    user_mem_check_addr = (uintptr_t)va_start;
+		    return -E_FAULT;
+		}
+	}   
 
 	return 0;
 }
@@ -582,9 +734,16 @@ check_page_free_list(bool only_low_memory)
 
 	// if there's a page that shouldn't be on the free list,
 	// try to make sure it eventually causes trouble.
+	int i=0;
 	for (pp = page_free_list; pp; pp = pp->pp_link)
+	{	
 		if (PDX(page2pa(pp)) < pdx_limit)
+		{
 			memset(page2kva(pp), 0x97, 128);
+		}
+		//cprintf("2. i=%d,page2pa(pp)=%08x\n",i,page2pa(pp));
+		i++;
+	}
 
 	first_free_page = (char *) boot_alloc(0);
 	for (pp = page_free_list; pp; pp = pp->pp_link) {
@@ -607,6 +766,8 @@ check_page_free_list(bool only_low_memory)
 		else
 			++nfree_extmem;
 	}
+	cprintf("nfree_basemem = %d, nfree_extmem = %d pdx_limit = %d \n\n",\
+	       	nfree_basemem, nfree_extmem, pdx_limit);
 
 	assert(nfree_basemem > 0);
 	assert(nfree_extmem > 0);
