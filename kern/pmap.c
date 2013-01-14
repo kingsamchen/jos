@@ -339,6 +339,7 @@ page_init(void)
 	page_free_list = NULL;
 	for (i = 1; i < npages ; i++) {
 		if ((low_ppn <= i) && (i < up_ppn)) continue;
+		if (i == MPENTRY_PADDR/PGSIZE) continue;
 		pages[i].pp_link = page_free_list; 
 		page_free_list = &pages[i];
 		//cprintf("page phyaddr =%08x has been added\n",page2pa(&pages[i]));
@@ -632,7 +633,20 @@ mmio_map_region(physaddr_t pa, size_t size)
 	// Hint: The staff solution uses boot_map_region.
 	//
 	// Your code here:
-	panic("mmio_map_region not implemented");
+	uintptr_t  saved_base;
+
+	size = ROUNDUP(size, PGSIZE);
+
+	if (size > MMIOLIM) {
+		panic("in pmap.c: mmio_map_region\n");
+	}
+
+	boot_map_region(kern_pgdir, base, size, pa, PTE_PCD|PTE_PWT|PTE_W);
+	
+	saved_base = base;
+	base += size; // base is static and preserved
+
+	return (void *)saved_base;
 }
 
 static uintptr_t user_mem_check_addr;
