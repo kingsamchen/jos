@@ -300,17 +300,18 @@ region_alloc(struct Env *e, void *va, size_t len)
 	int ret;
 	struct PageInfo *pp;
 
-	ROUNDDOWN(va, PGSIZE);
-	ROUNDUP(va + len, PGSIZE);
+	uint32_t _va_start = (uint32_t)ROUNDDOWN(va, PGSIZE);
+	uint32_t _va_end = (uint32_t)ROUNDUP(va + len, PGSIZE);
 
-	for (; (int)len > 0; len -= PGSIZE, va += PGSIZE) {
+	for (; _va_start < _va_end; _va_start += PGSIZE) {
 		pp = page_alloc(0); 
 
 		if ( pp == NULL) {
 			panic("in region_alloc: pp == NULL\n");
 		}
 
-		ret = page_insert(e->env_pgdir, pp, va, PTE_U|PTE_W); 
+		ret = page_insert(e->env_pgdir, pp, (void *)_va_start,\
+				  PTE_U|PTE_W); 
 
 		if ( ret != 0) {
 			panic("in region_alloc: ret != 0\n");
